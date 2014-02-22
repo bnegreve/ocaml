@@ -189,7 +189,8 @@ type status =
     mouse_y : int;
     button : bool;
     keypressed : bool;
-    key : char }
+    key : char; 
+    timeout : bool; }
 
 type event =
     Button_down
@@ -198,16 +199,19 @@ type event =
   | Mouse_motion
   | Poll
 
-external wait_next_event : event list -> status = "caml_gr_wait_event"
+external wait_next_event_timeout : event list -> int -> status = "caml_gr_wait_event"
 
+let wait_next_event ?(timeout=(-1)) event_list =
+  wait_next_event_timeout event_list timeout;;
+    
 let mouse_pos () =
   let e = wait_next_event [Poll] in (e.mouse_x, e.mouse_y)
 
 let button_down () =
   let e = wait_next_event [Poll] in e.button
 
-let read_key () =
-  let e = wait_next_event [Key_pressed] in e.key
+let read_key ?(timeout=(-1)) () =
+  let e = wait_next_event ~timeout:timeout [Key_pressed] in e.key
 
 let key_pressed () =
   let e = wait_next_event [Poll] in e.keypressed

@@ -280,6 +280,7 @@ type status =
     button : bool;              (** true if a mouse button is pressed *)
     keypressed : bool;          (** true if a key has been pressed *)
     key : char;                 (** the character for the key pressed *)
+    timeout: bool;              (** true if timeout was reached *)
   }
 (** To report events. *)
 
@@ -293,7 +294,7 @@ type event =
 (** To specify events to wait for. *)
 
 
-external wait_next_event : event list -> status = "caml_gr_wait_event"
+val wait_next_event : ?timeout:int -> event list -> status
 (** Wait until one of the events specified in the given event list
    occurs, and return the status of the mouse and keyboard at
    that time. If [Poll] is given in the event list, return immediately
@@ -322,7 +323,7 @@ val mouse_pos : unit -> int * int
 val button_down : unit -> bool
 (** Return [true] if the mouse button is pressed, [false] otherwise. *)
 
-val read_key : unit -> char
+val read_key : ?timeout:int -> unit -> char
 (** Wait for a key to be pressed, and return the corresponding
    character. Keypresses are queued. *)
 

@@ -22,12 +22,14 @@
 #endif
 #include <string.h>
 #include <unistd.h>
+#define NO_TIMEOUT -1
 
 struct event_data {
   short kind;
   short mouse_x, mouse_y;
   unsigned char button;
   unsigned char key;
+  int timeout; 
 };
 
 static struct event_data caml_gr_queue[SIZE_QUEUE];
@@ -47,6 +49,7 @@ static void caml_gr_enqueue_event(int kind, int mouse_x, int mouse_y,
   ev->mouse_y = mouse_y;
   ev->button = (button != 0);
   ev->key = key;
+  ev->timeout = NO_TIMEOUT; 
   caml_gr_tail = (caml_gr_tail + 1) % SIZE_QUEUE;
   /* If queue was full, it now appears empty; drop oldest entry from queue. */
   if (QueueIsEmpty) caml_gr_head = (caml_gr_head + 1) % SIZE_QUEUE;
@@ -140,14 +143,15 @@ void caml_gr_handle_event(XEvent * event)
 }
 
 static value caml_gr_wait_allocate_result(int mouse_x, int mouse_y, int button,
-                                     int keypressed, int key)
+				      int keypressed, int key, int timeleft)
 {
-  value res = alloc_small(5, 0);
+  value res = alloc_small(6, 0);
   Field(res, 0) = Val_int(mouse_x);
   Field(res, 1) = Val_int(mouse_y == -1 ? -1 : Wcvt(mouse_y));
   Field(res, 2) = Val_bool(button);
   Field(res, 3) = Val_bool(keypressed);
   Field(res, 4) = Val_int(key & 0xFF);
+  Field(res, 5) = Val_bool((timeleft == 0 ? 1 : 0));
   return res;
 }
 
@@ -183,7 +187,7 @@ static value caml_gr_wait_event_poll(void)
     }
   }
   return
-    caml_gr_wait_allocate_result(mouse_x, mouse_y, button, keypressed, key);
+    caml_gr_wait_allocate_result(mouse_x, mouse_y, button, keypressed, key, NO_TIMEOUT);
 }
 
 static value caml_gr_wait_event_in_queue(long mask)
@@ -198,18 +202,34 @@ static value caml_gr_wait_event_in_queue(long mask)
         || (ev->kind == ButtonRelease && (mask & ButtonReleaseMask))
         || (ev->kind == MotionNotify && (mask & PointerMotionMask)))
       return caml_gr_wait_allocate_result(ev->mouse_x, ev->mouse_y,
-                                     ev->button, ev->kind == KeyPress,
-                                     ev->key);
+					  ev->button, ev->kind == KeyPress,
+					  ev->key, NO_TIMEOUT);
   }
   return Val_false;
 }
 
-static value caml_gr_wait_event_blocking(long mask)
+static struct timeval msec_to_timeval(int msec)
+{
+  struct timeval tv; 
+  tv.tv_sec = msec / 1000;
+  tv.tv_usec = (msec % 1000) * 1000; 
+  return tv; 
+}
+
+static int timeval_to_msec(struct timeval tv)
+{
+  return tv.tv_sec * 1000 + tv.tv_usec; 
+}
+
+
+static value caml_gr_wait_event_blocking(long mask, int timeout)
 {
   XEvent event;
   fd_set readfds;
   value res;
-
+  struct timeval timeout_tv;
+  int timeleft = timeout;
+  
   /* First see if we have a matching event in the queue */
   res = caml_gr_wait_event_in_queue(mask);
   if (res != Val_false) return res;
@@ -220,21 +240,31 @@ static value caml_gr_wait_event_blocking(long mask)
     XSelectInput(caml_gr_display, caml_gr_window.win, caml_gr_selected_events);
   }
 
+  timeout_tv = msec_to_timeval(timeleft); 
+  
   /* Replenish our event queue from that of X11 */
   caml_gr_ignore_sigio = True;
-  while (1) {
-    if (XCheckMaskEvent(caml_gr_display, -1 /*all events*/, &event)) {
-      /* One event available: add it to our queue */
+  while (1) {   
+    timeleft = timeval_to_msec(timeout_tv); //FIXME: Linux only: see man select. 
+    if (XCheckMaskEvent(caml_gr_display, -1 /*all events*/, &event)){
+      /* One X event available: add it to our queue */
       caml_gr_handle_event(&event);
       /* See if we now have a matching event */
       res = caml_gr_wait_event_in_queue(mask);
       if (res != Val_false) break;
+    } else if (timeleft == 0){ //FIXME: should enter the loop if timeleft == NOTIMEOUT
+	/* No event available, no time left */
+	res = caml_gr_wait_allocate_result(0,0,0,0,0,timeleft); 
+	break;
     } else {
       /* No event available: block on input socket until one is */
       FD_ZERO(&readfds);
       FD_SET(ConnectionNumber(caml_gr_display), &readfds);
       enter_blocking_section();
-      select(FD_SETSIZE, &readfds, NULL, NULL, NULL);
+      if(timeout == NO_TIMEOUT)
+	select(FD_SETSIZE, &readfds, NULL, NULL, NULL);
+      else 
+	select(FD_SETSIZE, &readfds, NULL, NULL, &timeout_tv);	
       leave_blocking_section();
       caml_gr_check_open(); /* in case another thread closed the display */
     }
@@ -245,8 +275,9 @@ static value caml_gr_wait_event_blocking(long mask)
   return res;
 }
 
-value caml_gr_wait_event(value eventlist) /* ML */
+value caml_gr_wait_event(value eventlist, int timeout_) /* ML */
 {
+  int timeout = Int_val(timeout_); 
   int mask;
   Bool poll;
 
@@ -271,5 +302,5 @@ value caml_gr_wait_event(value eventlist) /* ML */
   if (poll)
     return caml_gr_wait_event_poll();
   else
-    return caml_gr_wait_event_blocking(mask);
+    return caml_gr_wait_event_blocking(mask, timeout);
 }
